@@ -1,0 +1,4 @@
+-define(PUERTO, 8009).
+-define(COMANDO_INVALIDO, "Comando no valido.\0").
+-define(NOMBRE_INVALIDO, "Dicho nombre ya existe.\0").
+-define(USUARIO_INVALIDO, "Dicho usuario no existe.\0").

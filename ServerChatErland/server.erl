@@ -1,19 +1,15 @@
 -module(server).
--define(PUERTO, 8008).
--define(COMANDO_INVALIDO, "Comando no valido.\0").
--define(NOMBRE_INVALIDO, "Dicho nombre ya existe.\0").
--define(USUARIO_INVALIDO, "Dicho usuario no existe.\0").
--export([start/0,fin/1,receptor/1,echoResp/2,gestionarMapa/1,mandarMsjGlobal/3,
-generarNombre/1, enviarMsjError/2]).
+-include("server.hrl").
+-export([start/0, receptor/1, gestionarMapa/1, echoResp/2]).
 
-%% start: Crear un socket, y ponerse a escuchar.
+%%start: crea un socket, y se pone a escuchar.
 start()->
-    %% register(servidor, self()),
     {ok, Socket} = gen_tcp:listen(?PUERTO
                                  , [ binary, {active, false}]),
     spawn(?MODULE,receptor, [Socket]),
     Pid = spawn(?MODULE, gestionarMapa, [maps:new()]),
-    register(agenda, Pid).
+    register(agenda, Pid),
+    ok.
 
 fin(Socket) ->
     gen_tcp:close(Socket).
@@ -21,6 +17,9 @@ fin(Socket) ->
 enviarMsjError(Socket, Msj) ->
     gen_tcp:send(Socket, Msj).
 
+%%gestionarMapa: gestiona la "base de datos", es decir, el diccionario
+%%del programa en donde se guarda como clave el nombre otorgado al cliente y
+%como value el socket del cliente.
 gestionarMapa(Mapa) ->
     receive
         {agregar, Socket, Pid} ->
@@ -62,14 +61,17 @@ gestionarMapa(Mapa) ->
 
         {salir, Nombre} ->
             Socket = maps:get(Nombre, Mapa),
-            fin(Socket),
             MapaR = maps:remove(Nombre, Mapa),
+            gen_tcp:send(Socket, "/exit\0"),
+            fin(Socket),
             gestionarMapa(MapaR);
 
         fin ->
             ok
     end.
 
+%%mandarMsjGlobal: obtiene el socket del cliente de todos los clientes
+%para poder hacerles llegar un mensaje.
 mandarMsjGlobal([], Mapa, Msj) ->
     ok;
 mandarMsjGlobal([Key | Xs], Mapa, Msj) ->
@@ -77,6 +79,7 @@ mandarMsjGlobal([Key | Xs], Mapa, Msj) ->
     gen_tcp:send(Socket, Msj),
     mandarMsjGlobal(Xs, Mapa, Msj).
 
+%%generarNombre: le genera un nombre a cada nuevo cliente que no este en el mapa.
 generarNombre(Mapa)->
     Nro = rand:uniform(50),
     Nombre = "Cliente" ++ integer_to_list(Nro),
@@ -88,8 +91,7 @@ generarNombre(Mapa)->
             generarNombre(Mapa)
     end.
 
-%% receptor: Espera a los clientes y crea nuevos actores para atender los pedidos.
-%%
+%%receptor: espera a los clientes y crea nuevos actores para atender los pedidos.
 receptor(Socket) ->
     case gen_tcp:accept(Socket) of
         {ok, CSocket} ->
@@ -106,9 +108,8 @@ receptor(Socket) ->
             io:format("Falló la espera del client por: ~p~n",[Reason])
     end,
     receptor(Socket).
-    %% end.
 
-%% echoResp: atiende al cliente.
+%%echoResp: atiende al cliente.
 echoResp(Socket, Nombre) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Packet} ->
