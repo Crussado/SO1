@@ -1,9 +1,10 @@
 -module(server).
--define(PUERTO, 1234).
--define(COMANDO_INVALIDO, "Comando no valido.~n").
--define(NOMBRE_INVALIDO, "Dicho nombre ya existe.~n").
--define(USUARIO_INVALIDO, "Dicho usuario no existe.~n").
--export([start/0,fin/1,receptor/1,echoResp/1]).
+-define(PUERTO, 8008).
+-define(COMANDO_INVALIDO, "Comando no valido.\0").
+-define(NOMBRE_INVALIDO, "Dicho nombre ya existe.\0").
+-define(USUARIO_INVALIDO, "Dicho usuario no existe.\0").
+-export([start/0,fin/1,receptor/1,echoResp/2,gestionarMapa/1,mandarMsjGlobal/3,
+generarNombre/1, enviarMsjError/2]).
 
 %% start: Crear un socket, y ponerse a escuchar.
 start()->
@@ -15,8 +16,10 @@ start()->
     register(agenda, Pid).
 
 fin(Socket) ->
-    gen_tcp:close(Socket),
-    
+    gen_tcp:close(Socket).
+
+enviarMsjError(Socket, Msj) ->
+    gen_tcp:send(Socket, Msj).
 
 gestionarMapa(Mapa) ->
     receive
@@ -28,21 +31,23 @@ gestionarMapa(Mapa) ->
 
         {global, Nombre, Msj} ->
             Keys = maps:keys(Mapa),
-            mandarMsjGlobal(Keys, Mapa, Nombre ++ ": " ++ Msj),
+            mandarMsjGlobal(Keys, Mapa, Nombre ++ ": " ++ Msj ++ "\0"),
             gestionarMapa(Mapa);
 
-        {cambiar, Nombre, NewNombre} ->
+        {cambiar, Nombre, NewNombre, Pid} ->
             Socket = maps:get(Nombre, Mapa),
             case maps:is_key(NewNombre, Mapa) of 
                 false ->
                     MapaR = maps:remove(Nombre, Mapa),
                     NewMapa = maps:put(NewNombre, Socket, MapaR),
+                    Pid ! NewNombre,
                     gestionarMapa(NewMapa);
                 true -> 
                     enviarMsjError(Socket, ?NOMBRE_INVALIDO),
+                    Pid ! Nombre,
                     gestionarMapa(Mapa)
             end;
-    
+
         {susurrar, NombreOrigen, NombreDestino, Msj} ->
             case maps:is_key(NombreDestino, Mapa) of 
                 false ->
@@ -51,13 +56,17 @@ gestionarMapa(Mapa) ->
                     gestionarMapa(Mapa);
                 true ->
                     Socket = maps:get(NombreDestino, Mapa),
-                    gen_tcp:send(Socket, "[" ++ NombreOrigen ++ "]: " ++ Msj),
+                    gen_tcp:send(Socket, "[" ++ NombreOrigen ++ "]: " ++ Msj ++ "\0"),
                     gestionarMapa(Mapa)
             end;
+
         {salir, Nombre} ->
+            Socket = maps:get(Nombre, Mapa),
+            fin(Socket),
             MapaR = maps:remove(Nombre, Mapa),
             gestionarMapa(MapaR);
-        fin -> 
+
+        fin ->
             ok
     end.
 
@@ -69,8 +78,9 @@ mandarMsjGlobal([Key | Xs], Mapa, Msj) ->
     mandarMsjGlobal(Xs, Mapa, Msj).
 
 generarNombre(Mapa)->
-    Nro = rand:numero(50),
+    Nro = rand:uniform(50),
     Nombre = "Cliente" ++ integer_to_list(Nro),
+
     case maps:is_key(Nombre, Mapa) of 
         false ->
             Nombre;
@@ -81,62 +91,64 @@ generarNombre(Mapa)->
 %% receptor: Espera a los clientes y crea nuevos actores para atender los pedidos.
 %%
 receptor(Socket) ->
-        case gen_tcp:accept(Socket) of
-            {ok, CSocket} ->
-                agenda ! {agregar, CSocket, self()},
-                receive
-                    {ok, Nombre} ->
-                        spawn(?MODULE, echoResp,[CSocket, Nombre])
-                end;
-            {error, closed} ->
-                io:format("Se cerró el closed, nos vamos a mimir"),
-                agenda ! fin,
-                exit(normal);
-            {error, Reason} ->
-                io:format("Falló la espera del client por: ~p~n",[Reason])
-        end,
-        receptor(Socket).
+    case gen_tcp:accept(Socket) of
+        {ok, CSocket} ->
+            agenda ! {agregar, CSocket, self()},
+            receive
+                {ok, Nombre} ->
+                    spawn(?MODULE, echoResp,[CSocket, Nombre])
+            end;
+        {error, closed} ->
+            io:format("Nos vamos a mimir."),
+            agenda ! fin,
+            exit(normal);
+        {error, Reason} ->
+            io:format("Falló la espera del client por: ~p~n",[Reason])
+    end,
+    receptor(Socket).
     %% end.
-
-removeZeros([]) ->
-    [];
-removeZeros([0 | Xs]) ->
-    removeZeros(Xs);
-removeZeros([_X | Xs]) -> 
-    [_X | removeZeros(Xs)].
-
-
-enviarMsjError(Socket, Msj) ->
-    gen_tcp:send(Socket, Msj).
 
 %% echoResp: atiende al cliente.
 echoResp(Socket, Nombre) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Packet} ->
-            Msj = (removeZeros(binary_to_list(Packet))),
-            io:format("Me llegó ~p~n", [Msj]),
+            MsjBin = binary:split(Packet, <<0>>),
+            MsjList = lists:map(fun binary:bin_to_list/1, MsjBin),
+            Msj = hd(MsjList),
             Datos = string:lexemes(Msj, " "),
+            if 
+                Datos == [] ->
+                    echoResp(Socket, Nombre);
+                true -> 
+                    ok
+            end,
             case lists:nth(1, Datos) of 
                 "/exit" ->
                     agenda ! {salir, Nombre};
                 "/nickname" ->
                     if
                         (length(Datos) /= 2) -> 
-                            enviarMsjError(Socket, ?COMANDO_INVALIDO);
+                            enviarMsjError(Socket, ?COMANDO_INVALIDO),
+                            echoResp(Socket, Nombre);
                     true->
-                        agenda ! {cambiar, Nombre, lists:nth(2, Datos)}
+                        agenda ! {cambiar, Nombre, lists:nth(2, Datos), self()},
+                        receive 
+                            Name -> echoResp(Socket, Name)
+                        end
                     end;
                 "/msj" -> 
                     if
-                        (length(Datos) /= 3) ->
+                        (length(Datos) < 3) ->
                             enviarMsjError(Socket, ?COMANDO_INVALIDO);
-                    true ->
-                        agenda ! {susurrar, lists:nth(2, Datos), lists:nth(3, Datos)}
-                    end;
+                    true ->   
+                        agenda ! {susurrar, Nombre, lists:nth(2, Datos), string:join(tl(tl(Datos)), " ")}
+                    end,
+                    echoResp(Socket, Nombre);
                 _ ->
-                    agenda ! {global, Nombre, Msj}
-            end,
-            echoResp(Socket, Nombre);
+                    agenda ! {global, Nombre, Msj},
+                    echoResp(Socket, Nombre)
+            end;
         {error, closed} ->
-            io:format("El cliente cerró la conexión~n")
+            io:format("El cliente cerró la conexión~n"),
+            agenda ! {salir, Nombre}
     end.

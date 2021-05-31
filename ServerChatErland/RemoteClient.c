@@ -51,9 +51,10 @@ int main(int argc, char **argv){
   printf("La conexión fue un éxito!\n");
 
   /* Recibimos lo que nos manda el servidor */
-  send(sock, "Holi alto orto", sizeof("Holi alto orto"),0);
+  send(sock, "Holi alto orto", sizeof("Holi alto orto") + 1,0);
   recv(sock, buf, sizeof(buf),0);
-  printf("Recv:%s\n", buf);
+  buf[strlen(buf)] = 0;
+  printf("%s\n", buf);
 
   /* Respondemos con nuestro PONG! */
 
